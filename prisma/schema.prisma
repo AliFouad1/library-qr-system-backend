@@ -1,0 +1,196 @@
+// Prisma Schema for QR Code Based Smart Library Management System
+// Database: PostgreSQL
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ENUMS
+enum UserRole {
+  ADMIN
+  STAFF
+  USER
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
+enum BookStatus {
+  AVAILABLE
+  BORROWED
+  MAINTENANCE
+  LOST
+}
+
+enum BorrowingStatus {
+  BORROWED
+  RETURNED
+  OVERDUE
+}
+
+enum NotificationType {
+  OVERDUE
+  REMINDER
+  SYSTEM
+  INFO
+}
+
+// MODELS
+
+model User {
+  id            String         @id @default(uuid())
+  email         String         @unique
+  password      String
+  fullName      String         @map("full_name")
+  role          UserRole       @default(USER)
+  phone         String?
+  status        UserStatus     @default(ACTIVE)
+  createdAt     DateTime       @default(now()) @map("created_at")
+  updatedAt     DateTime       @updatedAt @map("updated_at")
+  
+  // Relations
+  borrowings    Borrowing[]
+  notifications Notification[]
+  auditLogs     AuditLog[]
+
+  @@index([email])
+  @@index([role])
+  @@map("users")
+}
+
+model Category {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  
+  // Relations
+  books       Book[]
+
+  @@index([name])
+  @@map("categories")
+}
+
+model Shelf {
+  id          String   @id @default(uuid())
+  shelfCode   String   @unique @map("shelf_code")
+  location    String
+  floor       Int?
+  capacity    Int      @default(100)
+  description String?
+  qrCode      String?  @map("qr_code")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  
+  // Relations
+  books       Book[]
+  auditLogs   AuditLog[]
+
+  @@index([shelfCode])
+  @@index([location])
+  @@map("shelves")
+}
+
+model Book {
+  id              String     @id @default(uuid())
+  title           String
+  author          String
+  isbn            String?    @unique
+  categoryId      String?    @map("category_id")
+  shelfId         String?    @map("shelf_id")
+  copiesTotal     Int        @default(1) @map("copies_total")
+  copiesAvailable Int        @default(1) @map("copies_available")
+  status          BookStatus @default(AVAILABLE)
+  description     String?
+  publicationYear Int?       @map("publication_year")
+  qrCode          String?    @map("qr_code")
+  createdAt       DateTime   @default(now()) @map("created_at")
+  updatedAt       DateTime   @updatedAt @map("updated_at")
+  
+  // Relations
+  category        Category?   @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  shelf           Shelf?      @relation(fields: [shelfId], references: [id], onDelete: SetNull)
+  borrowings      Borrowing[]
+  auditLogs       AuditLog[]
+
+  @@index([title])
+  @@index([author])
+  @@index([isbn])
+  @@index([categoryId])
+  @@index([shelfId])
+  @@index([status])
+  @@map("books")
+}
+
+model Borrowing {
+  id                 String          @id @default(uuid())
+  userId             String          @map("user_id")
+  bookId             String          @map("book_id")
+  borrowDate         DateTime        @default(now()) @map("borrow_date")
+  expectedReturnDate DateTime        @map("expected_return_date")
+  actualReturnDate   DateTime?       @map("actual_return_date")
+  status             BorrowingStatus @default(BORROWED)
+  notes              String?
+  createdAt          DateTime        @default(now()) @map("created_at")
+  updatedAt          DateTime        @updatedAt @map("updated_at")
+  
+  // Relations
+  user               User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  book               Book            @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([bookId])
+  @@index([status])
+  @@index([borrowDate, expectedReturnDate])
+  @@map("borrowing")
+}
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  userId      String?  @map("user_id")
+  bookId      String?  @map("book_id")
+  shelfId     String?  @map("shelf_id")
+  action      String
+  oldValue    Json?    @map("old_value")
+  newValue    Json?    @map("new_value")
+  ipAddress   String?  @map("ip_address")
+  userAgent   String?  @map("user_agent")
+  createdAt   DateTime @default(now()) @map("created_at")
+  
+  // Relations
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  book        Book?    @relation(fields: [bookId], references: [id], onDelete: SetNull)
+  shelf       Shelf?   @relation(fields: [shelfId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String           @map("user_id")
+  type      NotificationType
+  title     String
+  message   String
+  isRead    Boolean          @default(false) @map("is_read")
+  createdAt DateTime         @default(now()) @map("created_at")
+  
+  // Relations
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([isRead])
+  @@index([createdAt])
+  @@map("notifications")
+}
