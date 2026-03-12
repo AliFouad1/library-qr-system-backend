@@ -113,6 +113,7 @@ model Book {
   description     String?
   publicationYear Int?       @map("publication_year")
   qrCode          String?    @map("qr_code")
+  coverImage      String?    @map("cover_image")
   createdAt       DateTime   @default(now()) @map("created_at")
   updatedAt       DateTime   @updatedAt @map("updated_at")
   

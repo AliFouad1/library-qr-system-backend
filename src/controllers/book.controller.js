@@ -1,20 +1,49 @@
 /**
- * Book Controller
- * Handles all book management operations
+ * وحدة التحكم بالكتب (Book Controller)
+ * =====================================
+ * هذا الملف يحتوي على جميع الدوال المتعلقة بإدارة الكتب
+ *
+ * الدوال المتاحة:
+ * - getAllBooks: جلب جميع الكتب مع الفلترة والترقيم
+ * - getBookById: جلب كتاب واحد بالمعرف
+ * - createBook: إضافة كتاب جديد
+ * - updateBook: تعديل بيانات كتاب
+ * - deleteBook: حذف كتاب
+ * - getBookStats: إحصائيات الكتب
  */
 
+// استيراد Prisma للتعامل مع قاعدة البيانات
 import { PrismaClient } from '@prisma/client';
+
+// استيراد فئة الخطأ المخصصة
 import { AppError } from '../middleware/error.middleware.js';
+
+// استيراد دالة توليد رمز QR
 import { generateBookQRCode } from '../services/qr.service.js';
 
+// إنشاء اتصال بقاعدة البيانات
 const prisma = new PrismaClient();
 
 /**
- * Get all books with filters and pagination
+ * جلب جميع الكتب مع الفلترة والترقيم
  * GET /api/books
+ * =======================================
+ *
+ * معاملات الاستعلام (Query Parameters):
+ * @param {number} page - رقم الصفحة (افتراضي: 1)
+ * @param {number} limit - عدد النتائج في الصفحة (افتراضي: 10)
+ * @param {string} search - نص البحث (في العنوان، المؤلف، ISBN)
+ * @param {string} categoryId - تصفية حسب التصنيف
+ * @param {string} shelfId - تصفية حسب الرف
+ * @param {string} status - تصفية حسب الحالة (AVAILABLE/BORROWED/MAINTENANCE/LOST)
+ *
+ * المخرجات:
+ * - books: مصفوفة الكتب
+ * - pagination: معلومات الترقيم (الإجمالي، الصفحة الحالية، عدد الصفحات)
  */
 export const getAllBooks = async (req, res, next) => {
   try {
+    // استخراج معاملات الاستعلام مع القيم الافتراضية
     const {
       page = 1,
       limit = 10,
@@ -24,60 +53,73 @@ export const getAllBooks = async (req, res, next) => {
       status
     } = req.query;
 
+    // حساب عدد السجلات المُتخطاة (للترقيم)
+    // مثال: الصفحة 2 مع 10 نتائج = تخطي أول 10 سجلات
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    // Build filter conditions
+    // ===== بناء شروط الفلترة =====
     const where = {};
 
+    // فلتر البحث النصي
+    // يبحث في: العنوان، المؤلف، رقم ISBN
     if (search) {
       where.OR = [
-        { title: { contains: search, mode: 'insensitive' } },
-        { author: { contains: search, mode: 'insensitive' } },
-        { isbn: { contains: search, mode: 'insensitive' } }
+        { title: { contains: search, mode: 'insensitive' } }, // البحث في العنوان
+        { author: { contains: search, mode: 'insensitive' } }, // البحث في المؤلف
+        { isbn: { contains: search, mode: 'insensitive' } } // البحث في ISBN
       ];
     }
 
+    // فلتر التصنيف
     if (categoryId) {
       where.categoryId = categoryId;
     }
 
+    // فلتر الرف
     if (shelfId) {
       where.shelfId = shelfId;
     }
 
+    // فلتر الحالة
     if (status) {
       where.status = status;
     }
 
-    // Get books with pagination
+    // ===== تنفيذ الاستعلامات بالتوازي =====
+    // نجلب الكتب وعددها الإجمالي في نفس الوقت لتحسين الأداء
     const [books, total] = await Promise.all([
+      // جلب الكتب
       prisma.book.findMany({
         where,
+        // تضمين البيانات المرتبطة
         include: {
-          category: true,
-          shelf: true,
+          category: true, // بيانات التصنيف
+          shelf: true, // بيانات الرف
+          // جلب آخر استعارة نشطة (إن وجدت)
           borrowings: {
             where: { status: 'BORROWED' },
             take: 1,
             orderBy: { borrowDate: 'desc' }
           }
         },
-        skip,
-        take: parseInt(limit),
-        orderBy: { createdAt: 'desc' }
+        skip, // تخطي السجلات السابقة
+        take: parseInt(limit), // عدد السجلات المطلوبة
+        orderBy: { createdAt: 'desc' } // الترتيب: الأحدث أولاً
       }),
+      // عد إجمالي الكتب المطابقة
       prisma.book.count({ where })
     ]);
 
+    // إرسال الاستجابة
     res.json({
       success: true,
       data: {
         books,
         pagination: {
-          total,
-          page: parseInt(page),
-          limit: parseInt(limit),
-          totalPages: Math.ceil(total / parseInt(limit))
+          total, // إجمالي عدد الكتب
+          page: parseInt(page), // الصفحة الحالية
+          limit: parseInt(limit), // عدد النتائج في الصفحة
+          totalPages: Math.ceil(total / parseInt(limit)) // إجمالي عدد الصفحات
         }
       }
     });
@@ -87,18 +129,29 @@ export const getAllBooks = async (req, res, next) => {
 };
 
 /**
- * Get single book by ID
+ * جلب كتاب واحد بالمعرف
  * GET /api/books/:id
+ * GET /api/books/public/:id (للعامة)
+ * ==================================
+ *
+ * @param {string} id - معرف الكتاب
+ *
+ * المخرجات:
+ * - بيانات الكتاب الكاملة
+ * - التصنيف والرف
+ * - آخر 10 عمليات استعارة
  */
 export const getBookById = async (req, res, next) => {
   try {
     const { id } = req.params;
 
+    // جلب الكتاب مع البيانات المرتبطة
     const book = await prisma.book.findUnique({
       where: { id },
       include: {
-        category: true,
-        shelf: true,
+        category: true, // التصنيف
+        shelf: true, // الرف
+        // آخر 10 عمليات استعارة مع بيانات المستعير
         borrowings: {
           include: {
             user: {
@@ -115,8 +168,9 @@ export const getBookById = async (req, res, next) => {
       }
     });
 
+    // إذا لم يُوجد الكتاب
     if (!book) {
-      throw new AppError('Book not found', 'BOOK_NOT_FOUND', 404);
+      throw new AppError('الكتاب غير موجود', 'BOOK_NOT_FOUND', 404);
     }
 
     res.json({
@@ -129,11 +183,31 @@ export const getBookById = async (req, res, next) => {
 };
 
 /**
- * Create new book
+ * إضافة كتاب جديد
  * POST /api/books
+ * ================
+ * الصلاحيات: مدير أو موظف فقط
+ *
+ * البيانات المطلوبة:
+ * @param {string} title - عنوان الكتاب (مطلوب)
+ * @param {string} author - اسم المؤلف (مطلوب)
+ * @param {string} isbn - رقم ISBN (اختياري، فريد)
+ * @param {string} categoryId - معرف التصنيف (اختياري)
+ * @param {string} shelfId - معرف الرف (اختياري)
+ * @param {number} copiesTotal - عدد النسخ (افتراضي: 1)
+ * @param {string} description - وصف الكتاب (اختياري)
+ * @param {number} publicationYear - سنة النشر (اختياري)
+ *
+ * العملية:
+ * 1. التحقق من صحة البيانات
+ * 2. التحقق من عدم تكرار ISBN
+ * 3. إنشاء الكتاب في قاعدة البيانات
+ * 4. توليد رمز QR للكتاب
+ * 5. تسجيل العملية في سجل المراجعة
  */
 export const createBook = async (req, res, next) => {
   try {
+    // استخراج البيانات من الطلب
     const {
       title,
       author,
@@ -145,23 +219,23 @@ export const createBook = async (req, res, next) => {
       publicationYear
     } = req.body;
 
-    // Validation
+    // ===== التحقق من المدخلات =====
     if (!title || !author) {
-      throw new AppError('Title and author are required', 'VALIDATION_ERROR', 400);
+      throw new AppError('العنوان واسم المؤلف مطلوبان', 'VALIDATION_ERROR', 400);
     }
 
-    // Check if ISBN already exists
+    // ===== التحقق من عدم تكرار ISBN =====
     if (isbn) {
       const existingBook = await prisma.book.findUnique({
         where: { isbn }
       });
 
       if (existingBook) {
-        throw new AppError('A book with this ISBN already exists', 'ISBN_EXISTS', 409);
+        throw new AppError('يوجد كتاب آخر بنفس رقم ISBN', 'ISBN_EXISTS', 409);
       }
     }
 
-    // Create book
+    // ===== إنشاء الكتاب =====
     const book = await prisma.book.create({
       data: {
         title,
@@ -169,11 +243,11 @@ export const createBook = async (req, res, next) => {
         isbn,
         categoryId,
         shelfId,
-        copiesTotal: copiesTotal || 1,
-        copiesAvailable: copiesTotal || 1,
+        copiesTotal: copiesTotal || 1, // افتراضي: نسخة واحدة
+        copiesAvailable: copiesTotal || 1, // في البداية: جميع النسخ متاحة
         description,
         publicationYear,
-        status: 'AVAILABLE'
+        status: 'AVAILABLE' // الحالة: متاح
       },
       include: {
         category: true,
@@ -181,10 +255,11 @@ export const createBook = async (req, res, next) => {
       }
     });
 
-    // Generate QR code
+    // ===== توليد رمز QR =====
+    // رمز QR يحتوي على رابط لصفحة الكتاب
     const qrCode = await generateBookQRCode(book.id);
 
-    // Update book with QR code
+    // تحديث الكتاب برمز QR
     const updatedBook = await prisma.book.update({
       where: { id: book.id },
       data: { qrCode },
@@ -194,12 +269,12 @@ export const createBook = async (req, res, next) => {
       }
     });
 
-    // Log audit
+    // ===== تسجيل العملية =====
     await prisma.auditLog.create({
       data: {
-        userId: req.user.id,
+        userId: req.user.id, // من قام بالعملية
         bookId: book.id,
-        action: 'BOOK_CREATED',
+        action: 'BOOK_CREATED', // نوع العملية
         newValue: {
           title: book.title,
           author: book.author,
@@ -209,10 +284,11 @@ export const createBook = async (req, res, next) => {
       }
     });
 
+    // إرسال الاستجابة
     res.status(201).json({
       success: true,
       data: updatedBook,
-      message: 'Book created successfully with QR code'
+      message: 'تم إضافة الكتاب بنجاح مع رمز QR'
     });
   } catch (error) {
     next(error);
@@ -220,8 +296,18 @@ export const createBook = async (req, res, next) => {
 };
 
 /**
- * Update book
+ * تعديل بيانات كتاب
  * PUT /api/books/:id
+ * ===================
+ * الصلاحيات: مدير أو موظف فقط
+ *
+ * @param {string} id - معرف الكتاب
+ *
+ * يمكن تعديل أي حقل من حقول الكتاب
+ * النظام يتحقق من:
+ * - وجود الكتاب
+ * - عدم تكرار ISBN (إذا تم تغييره)
+ * - منطقية عدد النسخ (المتاحة <= الإجمالية)
  */
 export const updateBook = async (req, res, next) => {
   try {
@@ -239,38 +325,39 @@ export const updateBook = async (req, res, next) => {
       status
     } = req.body;
 
-    // Get existing book
+    // ===== التحقق من وجود الكتاب =====
     const existingBook = await prisma.book.findUnique({
       where: { id }
     });
 
     if (!existingBook) {
-      throw new AppError('Book not found', 'BOOK_NOT_FOUND', 404);
+      throw new AppError('الكتاب غير موجود', 'BOOK_NOT_FOUND', 404);
     }
 
-    // Check ISBN uniqueness
+    // ===== التحقق من ISBN =====
     if (isbn && isbn !== existingBook.isbn) {
       const duplicateIsbn = await prisma.book.findUnique({
         where: { isbn }
       });
 
       if (duplicateIsbn) {
-        throw new AppError('A book with this ISBN already exists', 'ISBN_EXISTS', 409);
+        throw new AppError('يوجد كتاب آخر بنفس رقم ISBN', 'ISBN_EXISTS', 409);
       }
     }
 
-    // Validate copies
+    // ===== التحقق من منطقية عدد النسخ =====
     if (copiesAvailable !== undefined && copiesTotal !== undefined) {
       if (copiesAvailable > copiesTotal) {
         throw new AppError(
-          'Available copies cannot exceed total copies',
+          'عدد النسخ المتاحة لا يمكن أن يتجاوز العدد الإجمالي',
           'VALIDATION_ERROR',
           400
         );
       }
     }
 
-    // Update book
+    // ===== تحديث الكتاب =====
+    // نستخدم الصيغة الشرطية لتحديث الحقول المُرسلة فقط
     const book = await prisma.book.update({
       where: { id },
       data: {
@@ -291,14 +378,14 @@ export const updateBook = async (req, res, next) => {
       }
     });
 
-    // Log audit
+    // ===== تسجيل العملية =====
     await prisma.auditLog.create({
       data: {
         userId: req.user.id,
         bookId: book.id,
         action: 'BOOK_UPDATED',
-        oldValue: existingBook,
-        newValue: book,
+        oldValue: existingBook, // القيم القديمة
+        newValue: book, // القيم الجديدة
         ipAddress: req.ip
       }
     });
@@ -306,7 +393,7 @@ export const updateBook = async (req, res, next) => {
     res.json({
       success: true,
       data: book,
-      message: 'Book updated successfully'
+      message: 'تم تحديث الكتاب بنجاح'
     });
   } catch (error) {
     next(error);
@@ -314,14 +401,22 @@ export const updateBook = async (req, res, next) => {
 };
 
 /**
- * Delete book
+ * حذف كتاب
  * DELETE /api/books/:id
+ * ======================
+ * الصلاحيات: مدير فقط
+ *
+ * الشروط:
+ * - يجب أن يكون الكتاب موجوداً
+ * - يجب ألا يكون للكتاب استعارات نشطة
+ *
+ * تحذير: هذه العملية لا يمكن التراجع عنها!
  */
 export const deleteBook = async (req, res, next) => {
   try {
     const { id } = req.params;
 
-    // Check if book has active borrowings
+    // ===== التحقق من الاستعارات النشطة =====
     const activeBorrowings = await prisma.borrowing.count({
       where: {
         bookId: id,
@@ -331,27 +426,27 @@ export const deleteBook = async (req, res, next) => {
 
     if (activeBorrowings > 0) {
       throw new AppError(
-        'Cannot delete book with active borrowings',
+        'لا يمكن حذف كتاب له استعارات نشطة',
         'ACTIVE_BORROWINGS',
         400
       );
     }
 
-    // Get book for audit log
+    // ===== التحقق من وجود الكتاب =====
     const book = await prisma.book.findUnique({
       where: { id }
     });
 
     if (!book) {
-      throw new AppError('Book not found', 'BOOK_NOT_FOUND', 404);
+      throw new AppError('الكتاب غير موجود', 'BOOK_NOT_FOUND', 404);
     }
 
-    // Delete book
+    // ===== حذف الكتاب =====
     await prisma.book.delete({
       where: { id }
     });
 
-    // Log audit
+    // ===== تسجيل العملية =====
     await prisma.auditLog.create({
       data: {
         userId: req.user.id,
@@ -367,7 +462,7 @@ export const deleteBook = async (req, res, next) => {
 
     res.json({
       success: true,
-      message: 'Book deleted successfully'
+      message: 'تم حذف الكتاب بنجاح'
     });
   } catch (error) {
     next(error);
@@ -375,41 +470,22 @@ export const deleteBook = async (req, res, next) => {
 };
 
 /**
- * Regenerate QR code for a book
- * POST /api/books/:id/regenerate-qr
- */
-export const regenerateQRCode = async (req, res, next) => {
-  try {
-    const { id } = req.params;
-
-    // Verify book exists
-    const book = await prisma.book.findUnique({
-      where: { id }
-    });
-
-    if (!book) {
-      throw new AppError('Book not found', 'BOOK_NOT_FOUND', 404);
-    }
-
-    // Generate new QR code
-    const qrCode = await generateBookQRCode(id);
-
-    res.json({
-      success: true,
-      data: { qrCode },
-      message: 'QR code regenerated successfully'
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-/**
- * Get book statistics
+ * إحصائيات الكتب
  * GET /api/books/stats
+ * =====================
+ *
+ * يُرجع إحصائيات شاملة عن الكتب:
+ * - totalBooks: إجمالي عدد الكتب
+ * - availableBooks: الكتب المتاحة
+ * - borrowedBooks: الكتب المُستعارة
+ * - maintenanceBooks: الكتب تحت الصيانة
+ * - lostBooks: الكتب المفقودة
+ * - totalCopies: إجمالي عدد النسخ
+ * - availableCopies: النسخ المتاحة
  */
 export const getBookStats = async (req, res, next) => {
   try {
+    // تنفيذ جميع الاستعلامات بالتوازي لتحسين الأداء
     const [
       totalBooks,
       availableBooks,
@@ -419,12 +495,19 @@ export const getBookStats = async (req, res, next) => {
       totalCopies,
       availableCopies
     ] = await Promise.all([
+      // عدد الكتب الإجمالي
       prisma.book.count(),
+      // عدد الكتب المتاحة
       prisma.book.count({ where: { status: 'AVAILABLE' } }),
+      // عدد الكتب المُستعارة
       prisma.book.count({ where: { status: 'BORROWED' } }),
+      // عدد الكتب تحت الصيانة
       prisma.book.count({ where: { status: 'MAINTENANCE' } }),
+      // عدد الكتب المفقودة
       prisma.book.count({ where: { status: 'LOST' } }),
+      // مجموع النسخ الكلي
       prisma.book.aggregate({ _sum: { copiesTotal: true } }),
+      // مجموع النسخ المتاحة
       prisma.book.aggregate({ _sum: { copiesAvailable: true } })
     ]);
 
@@ -446,42 +529,65 @@ export const getBookStats = async (req, res, next) => {
 };
 
 /**
- * Sync all book statuses based on copiesAvailable
- * POST /api/books/sync-status
+ * رفع صورة غلاف الكتاب
+ * POST /api/books/:id/cover
+ * =========================
+ * الصلاحيات: مدير أو موظف فقط
+ *
+ * @param {string} id - معرف الكتاب
+ * @param {File} coverImage - ملف الصورة
+ *
+ * العملية:
+ * 1. التحقق من وجود الكتاب
+ * 2. حفظ الصورة
+ * 3. تحديث مسار الصورة في قاعدة البيانات
  */
-export const syncBookStatus = async (req, res, next) => {
+export const uploadBookCover = async (req, res, next) => {
   try {
-    // Get all books
-    const books = await prisma.book.findMany({
-      where: {
-        status: {
-          notIn: ['MAINTENANCE', 'LOST'] // Don't change manual statuses
-        }
+    const { id } = req.params;
+
+    // التحقق من وجود ملف
+    if (!req.file) {
+      throw new AppError('لم يتم رفع أي ملف', 'NO_FILE_UPLOADED', 400);
+    }
+
+    // التحقق من وجود الكتاب
+    const existingBook = await prisma.book.findUnique({
+      where: { id }
+    });
+
+    if (!existingBook) {
+      throw new AppError('الكتاب غير موجود', 'BOOK_NOT_FOUND', 404);
+    }
+
+    // إنشاء مسار الصورة
+    const coverImagePath = `/uploads/covers/${req.file.filename}`;
+
+    // تحديث الكتاب بمسار الصورة
+    const book = await prisma.book.update({
+      where: { id },
+      data: { coverImage: coverImagePath },
+      include: {
+        category: true,
+        shelf: true
       }
     });
 
-    let updated = 0;
-
-    // Update each book's status based on copiesAvailable
-    for (const book of books) {
-      const correctStatus = book.copiesAvailable > 0 ? 'AVAILABLE' : 'BORROWED';
-
-      if (book.status !== correctStatus) {
-        await prisma.book.update({
-          where: { id: book.id },
-          data: { status: correctStatus }
-        });
-        updated++;
+    // تسجيل العملية
+    await prisma.auditLog.create({
+      data: {
+        userId: req.user.id,
+        bookId: book.id,
+        action: 'BOOK_COVER_UPLOADED',
+        newValue: { coverImage: coverImagePath },
+        ipAddress: req.ip
       }
-    }
+    });
 
     res.json({
       success: true,
-      message: `Synced ${updated} book(s) status`,
-      data: {
-        totalBooks: books.length,
-        updated
-      }
+      data: book,
+      message: 'تم رفع صورة الغلاف بنجاح'
     });
   } catch (error) {
     next(error);

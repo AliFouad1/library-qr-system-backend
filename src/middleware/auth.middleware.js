@@ -1,37 +1,67 @@
 /**
- * Authentication Middleware
- * Handles JWT token validation and role-based access control
+ * وسيط المصادقة (Authentication Middleware)
+ * ==========================================
+ * هذا الملف يحتوي على الدوال الوسيطة للتحقق من هوية المستخدم وصلاحياته
+ *
+ * ما هو الوسيط (Middleware)؟
+ * - هو دالة تُنفذ قبل وصول الطلب للمسار (Route)
+ * - يمكنه السماح للطلب بالمتابعة أو رفضه
+ * - يُستخدم للتحقق من تسجيل الدخول والصلاحيات
+ *
+ * الدوال المتاحة:
+ * - authenticate: التحقق من رمز JWT
+ * - authorize: التحقق من صلاحية الدور
  */
 
+// استيراد مكتبة JWT للتحقق من الرموز
 import jwt from 'jsonwebtoken';
+
+// استيراد Prisma للتعامل مع قاعدة البيانات
 import { PrismaClient } from '@prisma/client';
 
+// إنشاء اتصال بقاعدة البيانات
 const prisma = new PrismaClient();
 
 /**
- * Verify JWT token and attach user to request
+ * وسيط التحقق من رمز JWT
+ * ======================
+ * يتحقق من صحة رمز الوصول ويُرفق بيانات المستخدم بالطلب
+ *
+ * كيف يعمل:
+ * 1. يستخرج الرمز من هيدر Authorization
+ * 2. يفك تشفير الرمز ويتحقق من صلاحيته
+ * 3. يجلب بيانات المستخدم من قاعدة البيانات
+ * 4. يُرفق بيانات المستخدم بالطلب (req.user)
+ *
+ * صيغة الهيدر المتوقعة:
+ * Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
  */
 export const authenticate = async (req, res, next) => {
   try {
-    // Get token from header
+    // ===== استخراج الرمز من الهيدر =====
     const authHeader = req.headers.authorization;
-    
+
+    // التحقق من وجود الهيدر وأنه يبدأ بـ 'Bearer '
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return res.status(401).json({
         success: false,
         error: {
           code: 'NO_TOKEN',
-          message: 'Authentication token is required'
+          message: 'رمز المصادقة مطلوب'
         }
       });
     }
 
-    const token = authHeader.substring(7); // Remove 'Bearer ' prefix
+    // إزالة 'Bearer ' من بداية الرمز
+    const token = authHeader.substring(7);
 
-    // Verify token
+    // ===== التحقق من صحة الرمز =====
+    // jwt.verify يفك تشفير الرمز ويتحقق من:
+    // 1. الرمز غير مُعدل
+    // 2. الرمز غير منتهي الصلاحية
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    // Get user from database
+    // ===== جلب بيانات المستخدم =====
     const user = await prisma.user.findUnique({
       where: { id: decoded.userId },
       select: {
@@ -43,123 +73,112 @@ export const authenticate = async (req, res, next) => {
       }
     });
 
+    // التحقق من وجود المستخدم
     if (!user) {
       return res.status(401).json({
         success: false,
         error: {
           code: 'USER_NOT_FOUND',
-          message: 'User not found'
+          message: 'المستخدم غير موجود'
         }
       });
     }
 
+    // التحقق من أن الحساب نشط
     if (user.status !== 'ACTIVE') {
       return res.status(403).json({
         success: false,
         error: {
           code: 'ACCOUNT_INACTIVE',
-          message: 'Your account is inactive or suspended'
+          message: 'حسابك غير نشط أو موقوف'
         }
       });
     }
 
-    // Attach user to request
+    // ===== إرفاق بيانات المستخدم بالطلب =====
+    // الآن يمكن الوصول إلى req.user في المسارات والدوال التالية
     req.user = user;
+
+    // المتابعة للوسيط أو المسار التالي
     next();
   } catch (error) {
+    // ===== معالجة أخطاء JWT =====
+
+    // الرمز منتهي الصلاحية
     if (error.name === 'TokenExpiredError') {
       return res.status(401).json({
         success: false,
         error: {
           code: 'TOKEN_EXPIRED',
-          message: 'Authentication token has expired'
+          message: 'انتهت صلاحية رمز المصادقة'
         }
       });
     }
 
+    // الرمز غير صالح أو مُعدل
     if (error.name === 'JsonWebTokenError') {
       return res.status(401).json({
         success: false,
         error: {
           code: 'INVALID_TOKEN',
-          message: 'Invalid authentication token'
+          message: 'رمز المصادقة غير صالح'
         }
       });
     }
 
-    console.error('Authentication error:', error);
+    // خطأ غير متوقع
+    console.error('خطأ في المصادقة:', error);
     res.status(500).json({
       success: false,
       error: {
         code: 'AUTH_ERROR',
-        message: 'Authentication failed'
+        message: 'فشل في المصادقة'
       }
     });
   }
 };
 
 /**
- * Check if user has required role(s)
- * @param {string[]} allowedRoles - Array of allowed roles
+ * وسيط التحقق من الصلاحيات
+ * ========================
+ * يتحقق من أن المستخدم لديه الدور المطلوب
+ *
+ * الأدوار المتاحة:
+ * - ADMIN: مدير النظام (كل الصلاحيات)
+ * - STAFF: موظف المكتبة (إدارة الكتب والاستعارات)
+ * - USER: مستخدم عادي (عرض واستعارة فقط)
+ *
+ * طريقة الاستخدام:
+ * router.post('/books', authenticate, authorize('ADMIN', 'STAFF'), createBook);
+ *
+ * @param {string[]} allowedRoles - قائمة الأدوار المسموح بها
  */
 export const authorize = (...allowedRoles) => {
+  // نُرجع دالة وسيطة
   return (req, res, next) => {
+    // التحقق من أن المستخدم مُصادق عليه
     if (!req.user) {
       return res.status(401).json({
         success: false,
         error: {
           code: 'UNAUTHORIZED',
-          message: 'Authentication required'
+          message: 'يجب تسجيل الدخول أولاً'
         }
       });
     }
 
+    // التحقق من أن دور المستخدم ضمن الأدوار المسموح بها
     if (!allowedRoles.includes(req.user.role)) {
       return res.status(403).json({
         success: false,
         error: {
           code: 'FORBIDDEN',
-          message: 'You do not have permission to perform this action'
+          message: 'ليس لديك صلاحية لتنفيذ هذا الإجراء'
         }
       });
     }
 
+    // المتابعة للمسار التالي
     next();
   };
-};
-
-/**
- * Optional authentication (attach user if token exists, but don't require it)
- */
-export const optionalAuthenticate = async (req, res, next) => {
-  try {
-    const authHeader = req.headers.authorization;
-    
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return next();
-    }
-
-    const token = authHeader.substring(7);
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-    const user = await prisma.user.findUnique({
-      where: { id: decoded.userId },
-      select: {
-        id: true,
-        email: true,
-        fullName: true,
-        role: true,
-        status: true
-      }
-    });
-
-    if (user && user.status === 'ACTIVE') {
-      req.user = user;
-    }
-
-    next();
-  } catch (error) {
-    // Silently fail for optional auth
-    next();
-  }
 };

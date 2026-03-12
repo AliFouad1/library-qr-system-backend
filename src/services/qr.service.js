@@ -1,47 +1,75 @@
 /**
- * QR Code Service
- * Handles QR code generation and validation for books and shelves
+ * خدمة رمز QR (QR Code Service)
+ * ==============================
+ * هذا الملف يحتوي على جميع الدوال المتعلقة برموز QR
+ *
+ * ما هو رمز QR؟
+ * - رمز استجابة سريعة (Quick Response)
+ * - يحتوي على معلومات يمكن قراءتها بالكاميرا
+ * - يُستخدم في هذا النظام لتعريف الكتب والرفوف
+ *
+ * الدوال المتاحة:
+ * - generateBookQRCode: توليد رمز QR لكتاب
+ * - generateShelfQRCode: توليد رمز QR لرف
+ * - scanBook: مسح رمز QR لكتاب
+ * - scanShelf: مسح رمز QR لرف
  */
 
+// استيراد مكتبة توليد رموز QR
 import QRCode from 'qrcode';
+
+// استيراد Prisma للتعامل مع قاعدة البيانات
 import { PrismaClient } from '@prisma/client';
 
+// إنشاء اتصال بقاعدة البيانات
 const prisma = new PrismaClient();
 
 /**
- * Generate QR code for a book
- * QR contains only the book ID (secure approach)
- * @param {string} bookId - Book UUID
- * @returns {Promise<string>} Base64 encoded QR code image
+ * توليد رمز QR لكتاب
+ * ===================
+ * يُنشئ رمز QR يحتوي على رابط لصفحة الكتاب
+ *
+ * @param {string} bookId - معرف الكتاب (UUID)
+ * @returns {Promise<string>} - صورة QR بصيغة Base64
+ *
+ * محتوى الرمز:
+ * - رابط URL لصفحة تفاصيل الكتاب
+ * - مثال: http://localhost:3000/book/abc123
+ *
+ * إعدادات الرمز:
+ * - مستوى تصحيح الخطأ: عالي (H) - يعمل حتى لو تلف 30% منه
+ * - الحجم: 300x300 بكسل
+ * - الهامش: 2 وحدات
  */
 export const generateBookQRCode = async (bookId) => {
   try {
-    // Verify book exists
+    // ===== التحقق من وجود الكتاب =====
     const book = await prisma.book.findUnique({
       where: { id: bookId }
     });
 
     if (!book) {
-      throw new Error('Book not found');
+      throw new Error('الكتاب غير موجود');
     }
 
-    // QR contains URL to frontend book detail page
+    // ===== بناء رابط الكتاب =====
+    // الرابط الأساسي من إعدادات البيئة أو الافتراضي
     const baseUrl = process.env.QR_CODE_BASE_URL || 'http://localhost:3000/book';
     const qrData = `${baseUrl}/${bookId}`;
 
-    // Generate QR code as base64 data URL
+    // ===== توليد صورة QR =====
     const qrCodeDataURL = await QRCode.toDataURL(qrData, {
-      errorCorrectionLevel: 'H',
-      type: 'image/png',
-      width: 300,
-      margin: 2,
+      errorCorrectionLevel: 'H', // مستوى تصحيح خطأ عالي
+      type: 'image/png', // صيغة PNG
+      width: 300, // العرض بالبكسل
+      margin: 2, // الهامش
       color: {
-        dark: '#000000',
-        light: '#FFFFFF'
+        dark: '#000000', // لون الرمز (أسود)
+        light: '#FFFFFF' // لون الخلفية (أبيض)
       }
     });
 
-    // Update book with QR code
+    // ===== حفظ الرمز في قاعدة البيانات =====
     await prisma.book.update({
       where: { id: bookId },
       data: { qrCode: qrCodeDataURL }
@@ -49,32 +77,35 @@ export const generateBookQRCode = async (bookId) => {
 
     return qrCodeDataURL;
   } catch (error) {
-    console.error('Error generating book QR code:', error);
+    console.error('خطأ في توليد رمز QR للكتاب:', error);
     throw error;
   }
 };
 
 /**
- * Generate QR code for a shelf
- * @param {string} shelfId - Shelf UUID
- * @returns {Promise<string>} Base64 encoded QR code image
+ * توليد رمز QR لرف
+ * =================
+ * يُنشئ رمز QR يحتوي على رابط لصفحة الرف
+ *
+ * @param {string} shelfId - معرف الرف (UUID)
+ * @returns {Promise<string>} - صورة QR بصيغة Base64
  */
 export const generateShelfQRCode = async (shelfId) => {
   try {
-    // Verify shelf exists
+    // التحقق من وجود الرف
     const shelf = await prisma.shelf.findUnique({
       where: { id: shelfId }
     });
 
     if (!shelf) {
-      throw new Error('Shelf not found');
+      throw new Error('الرف غير موجود');
     }
 
-    // QR contains URL to frontend shelf detail page
+    // بناء رابط الرف
     const baseUrl = process.env.QR_CODE_BASE_URL || 'http://localhost:3000/book';
     const qrData = `${baseUrl.replace('/book', '/shelf')}/${shelfId}`;
 
-    // Generate QR code
+    // توليد صورة QR
     const qrCodeDataURL = await QRCode.toDataURL(qrData, {
       errorCorrectionLevel: 'H',
       type: 'image/png',
@@ -86,7 +117,7 @@ export const generateShelfQRCode = async (shelfId) => {
       }
     });
 
-    // Update shelf with QR code
+    // حفظ الرمز في قاعدة البيانات
     await prisma.shelf.update({
       where: { id: shelfId },
       data: { qrCode: qrCodeDataURL }
@@ -94,94 +125,34 @@ export const generateShelfQRCode = async (shelfId) => {
 
     return qrCodeDataURL;
   } catch (error) {
-    console.error('Error generating shelf QR code:', error);
+    console.error('خطأ في توليد رمز QR للرف:', error);
     throw error;
   }
 };
 
 /**
- * Validate and decode scanned QR code
- * @param {string} qrData - Scanned QR data (JSON string)
- * @returns {Promise<Object>} Decoded QR data with validation
- */
-export const validateQRCode = async (qrData) => {
-  try {
-    // Parse QR data
-    let parsed;
-    try {
-      parsed = JSON.parse(qrData);
-    } catch {
-      throw new Error('Invalid QR code format');
-    }
-
-    const { type, id } = parsed;
-
-    if (!type || !id) {
-      throw new Error('QR code missing required fields');
-    }
-
-    // Validate based on type
-    if (type === 'BOOK') {
-      const book = await prisma.book.findUnique({
-        where: { id },
-        include: {
-          category: true,
-          shelf: true
-        }
-      });
-
-      if (!book) {
-        throw new Error('Book not found');
-      }
-
-      return {
-        valid: true,
-        type: 'BOOK',
-        data: book
-      };
-    } else if (type === 'SHELF') {
-      const shelf = await prisma.shelf.findUnique({
-        where: { id },
-        include: {
-          books: {
-            include: {
-              category: true
-            }
-          }
-        }
-      });
-
-      if (!shelf) {
-        throw new Error('Shelf not found');
-      }
-
-      return {
-        valid: true,
-        type: 'SHELF',
-        data: shelf
-      };
-    } else {
-      throw new Error('Unknown QR code type');
-    }
-  } catch (error) {
-    return {
-      valid: false,
-      error: error.message
-    };
-  }
-};
-
-/**
- * Scan book QR and return book details
- * @param {string} bookId - Book UUID from scanned QR
- * @returns {Promise<Object>} Book details with status
+ * مسح رمز QR لكتاب
+ * =================
+ * يجلب تفاصيل الكتاب بعد مسح رمز QR الخاص به
+ *
+ * @param {string} bookId - معرف الكتاب من رمز QR
+ * @returns {Promise<Object>} - تفاصيل الكتاب مع حالة التوفر
+ *
+ * المخرجات تشمل:
+ * - بيانات الكتاب الأساسية
+ * - التصنيف والرف
+ * - سجل الاستعارات
+ * - حالة التوفر
+ * - المستعير الحالي (إن وجد)
  */
 export const scanBook = async (bookId) => {
+  // جلب بيانات الكتاب مع العلاقات
   const book = await prisma.book.findUnique({
     where: { id: bookId },
     include: {
-      category: true,
-      shelf: true,
+      category: true, // التصنيف
+      shelf: true, // الرف
+      // الاستعارات النشطة
       borrowings: {
         where: {
           status: 'BORROWED'
@@ -203,10 +174,10 @@ export const scanBook = async (bookId) => {
   });
 
   if (!book) {
-    throw new Error('Book not found');
+    throw new Error('الكتاب غير موجود');
   }
 
-  // Get borrowing history
+  // جلب سجل الاستعارات (آخر 10)
   const borrowingHistory = await prisma.borrowing.findMany({
     where: {
       bookId: book.id
@@ -223,23 +194,33 @@ export const scanBook = async (bookId) => {
     orderBy: {
       borrowDate: 'desc'
     },
-    take: 10 // Last 10 borrowings
+    take: 10
   });
 
+  // إرجاع البيانات مع معلومات إضافية
   return {
     ...book,
-    borrowingHistory,
-    isAvailable: book.copiesAvailable > 0,
-    currentBorrower: book.borrowings[0] || null
+    borrowingHistory, // سجل الاستعارات
+    isAvailable: book.copiesAvailable > 0, // هل متاح؟
+    currentBorrower: book.borrowings[0] || null // المستعير الحالي
   };
 };
 
 /**
- * Scan shelf QR and return shelf audit information
- * @param {string} shelfId - Shelf UUID from scanned QR
- * @returns {Promise<Object>} Shelf details with books
+ * مسح رمز QR لرف
+ * ===============
+ * يجلب تفاصيل الرف والكتب الموجودة عليه
+ *
+ * @param {string} shelfId - معرف الرف من رمز QR
+ * @returns {Promise<Object>} - تفاصيل الرف مع إحصائيات الكتب
+ *
+ * يُستخدم لـ:
+ * - جرد الكتب على رف معين
+ * - التحقق من وجود الكتب في مكانها الصحيح
+ * - معرفة الكتب المُستعارة من الرف
  */
 export const scanShelf = async (shelfId) => {
+  // جلب بيانات الرف مع الكتب
   const shelf = await prisma.shelf.findUnique({
     where: { id: shelfId },
     include: {
@@ -257,26 +238,30 @@ export const scanShelf = async (shelfId) => {
   });
 
   if (!shelf) {
-    throw new Error('Shelf not found');
+    throw new Error('الرف غير موجود');
   }
 
-  // Separate books by status
-  const expectedBooks = shelf.books;
-  const availableBooks = expectedBooks.filter(book => book.copiesAvailable > 0);
-  const borrowedBooks = expectedBooks.filter(book => book.borrowings.length > 0);
+  // ===== تصنيف الكتب =====
+  const expectedBooks = shelf.books; // جميع الكتب
+  const availableBooks = expectedBooks.filter(book => book.copiesAvailable > 0); // المتاحة
+  const borrowedBooks = expectedBooks.filter(book => book.borrowings.length > 0); // المُستعارة
 
+  // إرجاع البيانات المُنظمة
   return {
+    // بيانات الرف
     shelf: {
       id: shelf.id,
-      shelfCode: shelf.shelfCode,
-      location: shelf.location,
-      floor: shelf.floor,
-      capacity: shelf.capacity,
+      shelfCode: shelf.shelfCode, // رمز الرف
+      location: shelf.location, // الموقع
+      floor: shelf.floor, // الطابق
+      capacity: shelf.capacity, // السعة
       description: shelf.description
     },
-    expectedBooks: expectedBooks.length,
-    availableBooks: availableBooks.length,
-    borrowedBooks: borrowedBooks.length,
+    // الإحصائيات
+    expectedBooks: expectedBooks.length, // إجمالي الكتب
+    availableBooks: availableBooks.length, // المتاحة
+    borrowedBooks: borrowedBooks.length, // المُستعارة
+    // قائمة الكتب
     books: expectedBooks.map(book => ({
       id: book.id,
       title: book.title,
@@ -289,37 +274,4 @@ export const scanShelf = async (shelfId) => {
       isBorrowed: book.borrowings.length > 0
     }))
   };
-};
-
-/**
- * Generate printable QR codes (for multiple books or shelves)
- * @param {Array} items - Array of {id, type, title}
- * @returns {Promise<Array>} Array of QR codes with labels
- */
-export const generateBulkQRCodes = async (items) => {
-  const qrCodes = [];
-
-  for (const item of items) {
-    // Generate URL based on type
-    const baseUrl = process.env.QR_CODE_BASE_URL || 'http://localhost:3000/book';
-    const qrData = item.type === 'BOOK'
-      ? `${baseUrl}/${item.id}`
-      : `${baseUrl.replace('/book', '/shelf')}/${item.id}`;
-
-    const qrCodeDataURL = await QRCode.toDataURL(qrData, {
-      errorCorrectionLevel: 'H',
-      type: 'image/png',
-      width: 200,
-      margin: 1
-    });
-
-    qrCodes.push({
-      id: item.id,
-      type: item.type,
-      label: item.title || item.code,
-      qrCode: qrCodeDataURL
-    });
-  }
-
-  return qrCodes;
 };

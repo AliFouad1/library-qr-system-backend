@@ -1,167 +1,158 @@
 /**
- * Authentication Controller
- * Handles user registration, login, and token management
+ * وحدة التحكم بالمصادقة (Authentication Controller)
+ * ==========================================
+ * هذا الملف يحتوي على جميع الدوال المتعلقة بتسجيل الدخول وإدارة الجلسات
+ *
+ * الدوال المتاحة:
+ * - login: تسجيل الدخول
+ * - getCurrentUser: الحصول على بيانات المستخدم الحالي
  */
 
+// استيراد Prisma للتعامل مع قاعدة البيانات
 import { PrismaClient } from '@prisma/client';
+
+// استيراد مكتبة bcrypt لتشفير وفحص كلمات المرور
 import bcrypt from 'bcrypt';
+
+// استيراد مكتبة JWT لإنشاء رموز الوصول
 import jwt from 'jsonwebtoken';
+
+// استيراد فئة الخطأ المخصصة
 import { AppError } from '../middleware/error.middleware.js';
 
+// إنشاء اتصال بقاعدة البيانات
 const prisma = new PrismaClient();
 
 /**
- * Generate JWT token
+ * دالة توليد رمز الوصول (JWT Token)
+ * ===================================
+ * تُنشئ رمز وصول مُشفر يحتوي على معرف المستخدم
+ *
+ * @param {string} userId - معرف المستخدم
+ * @returns {string} - رمز JWT مُشفر
+ *
+ * الرمز يحتوي على:
+ * - userId: معرف المستخدم
+ * - صلاحية: 24 ساعة (أو حسب إعدادات البيئة)
  */
 const generateToken = (userId) => {
   return jwt.sign(
-    { userId },
-    process.env.JWT_SECRET,
-    { expiresIn: process.env.JWT_EXPIRES_IN || '24h' }
+    { userId }, // البيانات المُخزنة في الرمز
+    process.env.JWT_SECRET, // المفتاح السري للتشفير
+    { expiresIn: process.env.JWT_EXPIRES_IN || '24h' } // مدة الصلاحية
   );
 };
 
 /**
- * Register new user
- * POST /api/auth/register
- */
-export const register = async (req, res, next) => {
-  try {
-    const { email, password, fullName, role, phone } = req.body;
-
-    // Validation
-    if (!email || !password || !fullName) {
-      throw new AppError('Email, password, and full name are required', 'VALIDATION_ERROR', 400);
-    }
-
-    // Check if email already exists
-    const existingUser = await prisma.user.findUnique({
-      where: { email }
-    });
-
-    if (existingUser) {
-      throw new AppError('Email already registered', 'EMAIL_EXISTS', 409);
-    }
-
-    // Hash password
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    // Create user
-    const user = await prisma.user.create({
-      data: {
-        email,
-        password: hashedPassword,
-        fullName,
-        role: role || 'USER',
-        phone,
-        status: 'ACTIVE'
-      },
-      select: {
-        id: true,
-        email: true,
-        fullName: true,
-        role: true,
-        status: true,
-        createdAt: true
-      }
-    });
-
-    // Generate token
-    const token = generateToken(user.id);
-
-    // Log audit
-    await prisma.auditLog.create({
-      data: {
-        userId: user.id,
-        action: 'USER_REGISTERED',
-        newValue: { email: user.email, role: user.role },
-        ipAddress: req.ip
-      }
-    });
-
-    res.status(201).json({
-      success: true,
-      data: {
-        user,
-        token
-      },
-      message: 'User registered successfully'
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-/**
- * Login user
+ * تسجيل الدخول
  * POST /api/auth/login
+ * =====================
+ * يتحقق من بيانات المستخدم ويُنشئ جلسة جديدة
+ *
+ * المدخلات المطلوبة:
+ * @param {string} email - البريد الإلكتروني
+ * @param {string} password - كلمة المرور
+ *
+ * المخرجات:
+ * - بيانات المستخدم (بدون كلمة المرور)
+ * - رمز الوصول (token)
+ *
+ * الأخطاء المحتملة:
+ * - VALIDATION_ERROR: البريد أو كلمة المرور فارغة
+ * - INVALID_CREDENTIALS: بيانات الدخول غير صحيحة
+ * - ACCOUNT_INACTIVE: الحساب غير نشط أو موقوف
  */
 export const login = async (req, res, next) => {
   try {
+    // استخراج البريد وكلمة المرور من الطلب
     const { email, password } = req.body;
 
-    // Validation
+    // ===== التحقق من المدخلات =====
     if (!email || !password) {
-      throw new AppError('Email and password are required', 'VALIDATION_ERROR', 400);
+      throw new AppError('البريد الإلكتروني وكلمة المرور مطلوبان', 'VALIDATION_ERROR', 400);
     }
 
-    // Find user
+    // ===== البحث عن المستخدم في قاعدة البيانات =====
     const user = await prisma.user.findUnique({
       where: { email }
     });
 
+    // إذا لم يُوجد المستخدم
     if (!user) {
-      throw new AppError('Invalid email or password', 'INVALID_CREDENTIALS', 401);
+      throw new AppError('البريد الإلكتروني أو كلمة المرور غير صحيحة', 'INVALID_CREDENTIALS', 401);
     }
 
-    // Check password
+    // ===== التحقق من كلمة المرور =====
+    // مقارنة كلمة المرور المُدخلة مع المُشفرة في قاعدة البيانات
     const isPasswordValid = await bcrypt.compare(password, user.password);
 
     if (!isPasswordValid) {
-      throw new AppError('Invalid email or password', 'INVALID_CREDENTIALS', 401);
+      throw new AppError('البريد الإلكتروني أو كلمة المرور غير صحيحة', 'INVALID_CREDENTIALS', 401);
     }
 
-    // Check user status
+    // ===== التحقق من حالة الحساب =====
+    // الحساب يجب أن يكون نشطاً (ACTIVE)
     if (user.status !== 'ACTIVE') {
-      throw new AppError('Your account is inactive or suspended', 'ACCOUNT_INACTIVE', 403);
+      throw new AppError('حسابك غير نشط أو موقوف', 'ACCOUNT_INACTIVE', 403);
     }
 
-    // Generate token
+    // ===== إنشاء رمز الوصول =====
     const token = generateToken(user.id);
 
-    // Log audit
+    // ===== تسجيل العملية في سجل المراجعة =====
     await prisma.auditLog.create({
       data: {
         userId: user.id,
-        action: 'USER_LOGIN',
-        ipAddress: req.ip
+        action: 'USER_LOGIN', // نوع العملية: تسجيل دخول
+        ipAddress: req.ip // عنوان IP للمستخدم
       }
     });
 
-    // Return user data (without password)
+    // ===== إعداد الاستجابة =====
+    // إزالة كلمة المرور من البيانات المُرسلة
     const { password: _, ...userWithoutPassword } = user;
 
+    // إرسال الاستجابة بنجاح
     res.json({
       success: true,
       data: {
-        user: userWithoutPassword,
-        token
+        user: userWithoutPassword, // بيانات المستخدم
+        token // رمز الوصول
       },
-      message: 'Login successful'
+      message: 'تم تسجيل الدخول بنجاح'
     });
   } catch (error) {
+    // تمرير الخطأ للوسيط التالي
     next(error);
   }
 };
 
 /**
- * Get current user profile
+ * الحصول على بيانات المستخدم الحالي
  * GET /api/auth/me
+ * =================================
+ * يُرجع بيانات المستخدم المسجل حالياً
+ *
+ * المتطلبات:
+ * - يجب أن يكون المستخدم مُسجل الدخول (token صالح)
+ *
+ * المخرجات:
+ * - id: معرف المستخدم
+ * - email: البريد الإلكتروني
+ * - fullName: الاسم الكامل
+ * - role: الدور (ADMIN/STAFF/USER)
+ * - phone: رقم الهاتف
+ * - status: الحالة
+ * - createdAt: تاريخ إنشاء الحساب
+ * - updatedAt: تاريخ آخر تحديث
  */
 export const getCurrentUser = async (req, res, next) => {
   try {
+    // جلب بيانات المستخدم من قاعدة البيانات
+    // req.user.id يأتي من وسيط المصادقة (authenticate middleware)
     const user = await prisma.user.findUnique({
       where: { id: req.user.id },
+      // تحديد الحقول المطلوبة (بدون كلمة المرور)
       select: {
         id: true,
         email: true,
@@ -174,94 +165,10 @@ export const getCurrentUser = async (req, res, next) => {
       }
     });
 
+    // إرسال البيانات
     res.json({
       success: true,
       data: user
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-/**
- * Update user profile
- * PUT /api/auth/profile
- */
-export const updateProfile = async (req, res, next) => {
-  try {
-    const { fullName, phone } = req.body;
-
-    const user = await prisma.user.update({
-      where: { id: req.user.id },
-      data: {
-        ...(fullName && { fullName }),
-        ...(phone && { phone })
-      },
-      select: {
-        id: true,
-        email: true,
-        fullName: true,
-        role: true,
-        phone: true,
-        status: true
-      }
-    });
-
-    res.json({
-      success: true,
-      data: user,
-      message: 'Profile updated successfully'
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-/**
- * Change password
- * PUT /api/auth/change-password
- */
-export const changePassword = async (req, res, next) => {
-  try {
-    const { currentPassword, newPassword } = req.body;
-
-    if (!currentPassword || !newPassword) {
-      throw new AppError('Current and new password are required', 'VALIDATION_ERROR', 400);
-    }
-
-    // Get user with password
-    const user = await prisma.user.findUnique({
-      where: { id: req.user.id }
-    });
-
-    // Verify current password
-    const isPasswordValid = await bcrypt.compare(currentPassword, user.password);
-
-    if (!isPasswordValid) {
-      throw new AppError('Current password is incorrect', 'INVALID_PASSWORD', 401);
-    }
-
-    // Hash new password
-    const hashedPassword = await bcrypt.hash(newPassword, 10);
-
-    // Update password
-    await prisma.user.update({
-      where: { id: req.user.id },
-      data: { password: hashedPassword }
-    });
-
-    // Log audit
-    await prisma.auditLog.create({
-      data: {
-        userId: req.user.id,
-        action: 'PASSWORD_CHANGED',
-        ipAddress: req.ip
-      }
-    });
-
-    res.json({
-      success: true,
-      message: 'Password changed successfully'
     });
   } catch (error) {
     next(error);

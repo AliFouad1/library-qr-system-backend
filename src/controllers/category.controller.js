@@ -1,70 +1,51 @@
+/**
+ * وحدة التحكم بالتصنيفات (Category Controller)
+ * =============================================
+ * هذا الملف يحتوي على الدوال المتعلقة بإدارة تصنيفات الكتب
+ * مثل: خيال علمي، تاريخ، علوم، أدب، دين، إلخ
+ *
+ * الدوال المتاحة:
+ * - getAllCategories: جلب جميع التصنيفات
+ */
+
+// استيراد Prisma للتعامل مع قاعدة البيانات
 import { PrismaClient } from '@prisma/client';
+
+// استيراد فئة الخطأ المخصصة
 import { AppError } from '../middleware/error.middleware.js';
 
+// إنشاء اتصال بقاعدة البيانات
 const prisma = new PrismaClient();
 
+/**
+ * جلب جميع التصنيفات
+ * GET /api/categories
+ * ====================
+ *
+ * يُرجع قائمة بجميع تصنيفات الكتب مرتبة أبجدياً
+ * مع عدد الكتب في كل تصنيف
+ *
+ * المخرجات لكل تصنيف:
+ * - id: معرف التصنيف
+ * - name: اسم التصنيف
+ * - description: وصف التصنيف
+ * - _count.books: عدد الكتب في هذا التصنيف
+ */
 export const getAllCategories = async (req, res, next) => {
   try {
+    // جلب جميع التصنيفات مع عدد الكتب
     const categories = await prisma.category.findMany({
       include: {
+        // حساب عدد الكتب في كل تصنيف
         _count: {
           select: { books: true }
         }
       },
+      // الترتيب أبجدياً حسب الاسم
       orderBy: { name: 'asc' }
     });
 
     res.json({ success: true, data: categories });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const createCategory = async (req, res, next) => {
-  try {
-    const { name, description } = req.body;
-    
-    if (!name) {
-      throw new AppError('Category name is required', 'VALIDATION_ERROR', 400);
-    }
-
-    const category = await prisma.category.create({
-      data: { name, description }
-    });
-
-    res.status(201).json({
-      success: true,
-      data: category,
-      message: 'Category created successfully'
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const updateCategory = async (req, res, next) => {
-  try {
-    const { id } = req.params;
-    const { name, description } = req.body;
-
-    const category = await prisma.category.update({
-      where: { id },
-      data: { ...(name && { name }), ...(description !== undefined && { description }) }
-    });
-
-    res.json({ success: true, data: category, message: 'Category updated' });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const deleteCategory = async (req, res, next) => {
-  try {
-    const { id } = req.params;
-
-    await prisma.category.delete({ where: { id } });
-
-    res.json({ success: true, message: 'Category deleted' });
   } catch (error) {
     next(error);
   }
