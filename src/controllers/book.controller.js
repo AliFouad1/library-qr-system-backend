@@ -560,8 +560,33 @@ export const uploadBookCover = async (req, res, next) => {
       throw new AppError('الكتاب غير موجود', 'BOOK_NOT_FOUND', 404);
     }
 
-    // إنشاء مسار الصورة
-    const coverImagePath = `/uploads/covers/${req.file.filename}`;
+    // رفع الصورة إلى Supabase Storage
+    const { createClient } = await import('@supabase/supabase-js');
+    const supabase = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_SERVICE_ROLE_KEY
+    );
+
+    const ext = req.file.originalname.split('.').pop();
+    const filename = `cover-${Date.now()}-${Math.round(Math.random() * 1e9)}.${ext}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from('library-covers')
+      .upload(filename, req.file.buffer, {
+        contentType: req.file.mimetype,
+        upsert: false,
+      });
+
+    if (uploadError) {
+      throw new AppError('فشل رفع الصورة: ' + uploadError.message, 'UPLOAD_FAILED', 500);
+    }
+
+    const { data: { publicUrl } } = supabase.storage
+      .from('library-covers')
+      .getPublicUrl(filename);
+
+    // مسار الصورة العام
+    const coverImagePath = publicUrl;
 
     // تحديث الكتاب بمسار الصورة
     const book = await prisma.book.update({

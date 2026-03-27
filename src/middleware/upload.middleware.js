@@ -1,44 +1,16 @@
 /**
  * وسيط رفع الملفات (Upload Middleware)
  * =====================================
- * يُستخدم لرفع صور أغلفة الكتب
+ * يُستخدم لرفع صور أغلفة الكتب إلى Supabase Storage
  */
 
 import multer from 'multer';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import fs from 'fs';
 
-// الحصول على مسار الملف الحالي
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// مسار مجلد التحميلات
-const uploadsDir = path.join(__dirname, '../../uploads/covers');
-
-// إنشاء مجلد التحميلات إذا لم يكن موجوداً
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
-}
-
-// إعداد التخزين
-const storage = multer.diskStorage({
-  // مكان حفظ الملفات
-  destination: (req, file, cb) => {
-    cb(null, uploadsDir);
-  },
-  // اسم الملف
-  filename: (req, file, cb) => {
-    // إنشاء اسم فريد: timestamp-random.extension
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const ext = path.extname(file.originalname);
-    cb(null, `cover-${uniqueSuffix}${ext}`);
-  }
-});
+// استخدام الذاكرة المؤقتة بدلاً من القرص الصلب
+const storage = multer.memoryStorage();
 
 // فلتر أنواع الملفات (صور فقط)
 const fileFilter = (req, file, cb) => {
-  // الأنواع المسموحة
   const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
 
   if (allowedTypes.includes(file.mimetype)) {
